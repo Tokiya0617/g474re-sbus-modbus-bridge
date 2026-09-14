@@ -1,0 +1,108 @@
+version: "4.1"
+name: G474RE_Bridge_EIDE
+type: ARM
+deviceName: STM32G474RETx
+packDir: .pack/Keil/STM32G4xx_DFP.1.1.0
+srcDirs:
+  - ../G474RE_SBUS2RS485/Core
+  - ../G474RE_SBUS2RS485/Drivers/STM32G4xx_HAL_Driver/Src
+  - ../G474RE_SBUS2RS485/Drivers/BSP/STM32G4xx_Nucleo
+virtualFolder:
+  name: <virtual_root>
+  files:
+    - path: ../G474RE_SBUS2RS485/startup_stm32g474xx.s
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/croutine.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/event_groups.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/list.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/queue.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/tasks.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/timers.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F/port.c
+    - path: ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c
+  folders: []
+dependenceList: []
+outDir: build
+miscInfo:
+  uid: 8125d1043c304dacad86c25a23285658
+targets:
+  Debug:
+    cppPreprocessAttrs:
+      defineList:
+        - STM32G474xx
+        - USE_NUCLEO_64
+        - USE_HAL_DRIVER
+      incList:
+        - .
+        - ../G474RE_SBUS2RS485/Core/Inc
+        - ../G474RE_SBUS2RS485/Drivers/STM32G4xx_HAL_Driver/Inc
+        - ../G474RE_SBUS2RS485/Drivers/STM32G4xx_HAL_Driver/Inc/Legacy
+        - ../G474RE_SBUS2RS485/Drivers/BSP/STM32G4xx_Nucleo
+        - ../G474RE_SBUS2RS485/Drivers/CMSIS/Device/ST/STM32G4xx/Include
+        - ../G474RE_SBUS2RS485/Drivers/CMSIS/Include
+        - ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2
+        - ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/include
+        - ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F
+      libList: []
+    excludeList: []
+    settings:
+      debugger: cortex-debug
+    toolchain: GCC
+    toolchainConfigMap:
+      GCC:
+        archExtensions: ""
+        cpuType: Cortex-M4
+        floatingPointHardware: single
+        options:
+          version: 5
+          afterBuildTasks: []
+          asm-compiler: {}
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            language-c: c11
+            language-cpp: c++11
+            one-elf-section-per-data: true
+            one-elf-section-per-function: true
+            optimization: level-debug
+            warnings: all-warnings
+          global:
+            $float-abi-type: hard
+            arm-thumb-mode: thumb
+            not-use-syscalls: true
+            output-debug-info: enable
+            stack-usage: true
+            use-newlib-nano: true
+          linker:
+            $outputTaskExcludes:
+              - .bin
+            $toolName: auto
+            LIB_FLAGS: -lm
+            output-format: elf
+            remove-unused-input-sections: true
+        scatterFilePath: ../G474RE_SBUS2RS485/STM32G474xx_FLASH.ld
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      STLink:
+        address: "0x08000000"
+        bin: build/Debug/G474RE_Bridge_EIDE.hex
+        elFile: None
+        optionBytes: .eide/debug.st.option.bytes.ini
+        otherCmds: ""
+        proType: SWD
+        resetMode: default
+        runAfterProgram: true
+        speed: 4000
+    uploader: STLink
