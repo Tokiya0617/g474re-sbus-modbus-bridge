@@ -33,7 +33,10 @@ NUCLEO-G474RE
 - Q0-1100 端子排提供 COM1 的 RS485-A、RS485-B 和通信 GND。
 - Q0-1100 的 CAN/RS485 插座对应 COM2；手册说明 COM2 内置 120 Ω 终端电阻、支持 Modbus RTU 主站，并且不支持作为 Modbus RTU 从站。
 - 开发环境已确定为 STM32CubeMX + Visual Studio Code + EIDE，编译器使用 GNU Arm Embedded GCC；不使用 STM32CubeIDE。
-- `Code/` 当前为空，尚未建立 CubeMX/EIDE 工程。
+- 已建立 CubeMX + EIDE + FreeRTOS（CMSIS-RTOS V2）工程，用户已验证编译、烧录与 PA5 LED 心跳。CubeMX 源码位于 `Code/G474RE_SBUS2RS485/`，EIDE 工程位于 `Code/G474RE_Bridge_EIDE/`；下文目录树为早期建议，实际路径以此为准。
+- 当前 `diagTask`、`sbusTask`、`modbusTask` 静态创建；后两者仍是占位任务，尚未启动通信接收。
+- RTOS 台架故障码 `g_rtosFaultCode`：1 栈溢出，2 动态分配失败，3 创建任务前内核未就绪，4/5/6 分别为诊断/SBUS/Modbus 任务创建失败，7 调度器启动调用意外返回。异常停在关中断的循环中，不自动复位；这不等于车辆安全停车。故障码仅在 RAM 保存。
+- 启动检查位于 `USER CODE` 区域：创建任务前检查 `osKernelReady`，创建后检查三个句柄，`osKernelStart()` 返回即进入故障处理。故障注入验证尚待进行，不能以正常 LED 心跳代替异常路径测试。
 
 ## 3. 不得擅自推断的内容
 

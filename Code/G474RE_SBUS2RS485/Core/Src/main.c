@@ -48,7 +48,8 @@
 COM_InitTypeDef BspCOMInit;
 
 /* USER CODE BEGIN PV */
-
+/* 定义在 app_freertos.c，供调试器观察 RTOS 故障。 */
+extern volatile uint32_t g_rtosFaultCode;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -127,6 +128,10 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  /* 本工程不主动结束调度器；osKernelStart() 正常启动后不应返回。
+     不仅检查返回码：当前 CMSIS 包装层在调度器意外返回后也可能返回 osOK。 */
+  g_rtosFaultCode = 7U;
+  Error_Handler();
   while (1)
   {
 

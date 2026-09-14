@@ -46,7 +46,9 @@ typedef StaticTask_t osStaticThreadDef_t;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+/* 调试器中查看；仅保存在 RAM，复位后不保留 */
+volatile uint32_t g_rtosFaultCode = 0U;               // RTOS 故障代码
+TaskHandle_t volatile g_rtosFaultTask = NULL;         // RTOS 故障任务句柄
 /* USER CODE END Variables */
 /* Definitions for diagTask */
 osThreadId_t diagTaskHandle;
@@ -103,25 +105,44 @@ void vApplicationMallocFailedHook(void);
 /* USER CODE BEGIN 4 */
 void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
 {
-   /* Run time stack overflow checking is performed if
-   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
-   called if a stack overflow is detected. */
+	/* Run time stack overflow checking is performed if
+	configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
+	called if a stack overflow is detected. */
+	(void)pcTaskName;               // 告诉编译器这个参数暂时不用
+
+	__disable_irq();                // CMSIS 提供的处理器接口，用于屏蔽普通可屏蔽中断
+
+	g_rtosFaultTask = xTask;        // 保存 RTOS 故障任务句柄
+	g_rtosFaultCode = 1U;           // 保存 RTOS 故障代码，1 对应 StackOverFlow
+
+	for(;;)
+	{
+    __NOP();                      // 空指令
+	}
 }
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN 5 */
 void vApplicationMallocFailedHook(void)
 {
-   /* vApplicationMallocFailedHook() will only be called if
-   configUSE_MALLOC_FAILED_HOOK is set to 1 in FreeRTOSConfig.h. It is a hook
-   function that will get called if a call to pvPortMalloc() fails.
-   pvPortMalloc() is called internally by the kernel whenever a task, queue,
-   timer or semaphore is created. It is also called by various parts of the
-   demo application. If heap_1.c or heap_2.c are used, then the size of the
-   heap available to pvPortMalloc() is defined by configTOTAL_HEAP_SIZE in
-   FreeRTOSConfig.h, and the xPortGetFreeHeapSize() API function can be used
-   to query the size of free heap space that remains (although it does not
-   provide information on how the remaining heap might be fragmented). */
+  /* vApplicationMallocFailedHook() will only be called if
+  configUSE_MALLOC_FAILED_HOOK is set to 1 in FreeRTOSConfig.h. It is a hook
+  function that will get called if a call to pvPortMalloc() fails.
+  pvPortMalloc() is called internally by the kernel whenever a task, queue,
+  timer or semaphore is created. It is also called by various parts of the
+  demo application. If heap_1.c or heap_2.c are used, then the size of the
+  heap available to pvPortMalloc() is defined by configTOTAL_HEAP_SIZE in
+  FreeRTOSConfig.h, and the xPortGetFreeHeapSize() API function can be used
+  to query the size of free heap space that remains (although it does not
+  provide information on how the remaining heap might be fragmented). */
+  __disable_irq();              // 屏蔽普通可屏蔽中断
+
+  g_rtosFaultCode = 2U;         // 保存 RTOS 故障代码，2 对应 MallocFailed
+
+  for(;;)
+  {
+    __NOP();                    // 空指令
+  }
 }
 /* USER CODE END 5 */
 
@@ -132,7 +153,12 @@ void vApplicationMallocFailedHook(void)
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
-
+  /* main() 已调用 osKernelInitialize()；创建任务前必须处于 Ready 状态。 */
+  if (osKernelGetState() != osKernelReady)
+  {
+    g_rtosFaultCode = 3U; /* 内核初始化状态异常 */
+    Error_Handler();
+  }
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -162,7 +188,22 @@ void MX_FREERTOS_Init(void) {
   modbusTaskHandle = osThreadNew(StartModbusTask, NULL, &modbusTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  /* 调度器尚未启动；任一任务创建失败都禁止继续启动。 */
+  if (diagTaskHandle == NULL)
+  {
+    g_rtosFaultCode = 4U;
+    Error_Handler();
+  }
+  if (sbusTaskHandle == NULL)
+  {
+    g_rtosFaultCode = 5U;
+    Error_Handler();
+  }
+  if (modbusTaskHandle == NULL)
+  {
+    g_rtosFaultCode = 6U;
+    Error_Handler();
+  }
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
