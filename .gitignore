@@ -4,6 +4,9 @@ build/
 # EIDE 下载的芯片支持包
 .pack/
 
+# 厂商资料 PDF（体积大，仅本地保留，不入库）
+doc/**/*.pdf
+
 # 临时文件
 *.tmp
 *.bak

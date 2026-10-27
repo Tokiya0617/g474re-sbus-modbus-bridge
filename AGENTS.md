@@ -34,7 +34,7 @@ NUCLEO-G474RE
 - Q0-1100 的 CAN/RS485 插座对应 COM2；手册说明 COM2 内置 120 Ω 终端电阻、支持 Modbus RTU 主站，并且不支持作为 Modbus RTU 从站。
 - 开发环境已确定为 STM32CubeMX + Visual Studio Code + EIDE，编译器使用 GNU Arm Embedded GCC；不使用 STM32CubeIDE。
 - 已建立 CubeMX + EIDE + FreeRTOS（CMSIS-RTOS V2）工程，用户已验证编译、烧录与 PA5 LED 心跳。CubeMX 源码位于 `Code/G474RE_SBUS2RS485/`，EIDE 工程位于 `Code/G474RE_Bridge_EIDE/`；下文目录树为早期建议，实际路径以此为准。
-- 当前 `diagTask`、`sbusTask`、`modbusTask` 静态创建；后两者仍是占位任务，尚未启动通信接收。
+- 当前 `diagTask`、`sbusTask`、`modbusTask` 静态创建；SBUS 任务已接入 UART/DMA 接收与快照发布。Modbus 任务已接入候选 RTU 服务，但默认配置禁用，尚未启动 USART3 接收/应答；软件模型通过不等于真实通信验证。
 - RTOS 台架故障码 `g_rtosFaultCode`：1 栈溢出，2 动态分配失败，3 创建任务前内核未就绪，4/5/6 分别为诊断/SBUS/Modbus 任务创建失败，7 调度器启动调用意外返回。异常停在关中断的循环中，不自动复位；这不等于车辆安全停车。故障码仅在 RAM 保存。
 - 启动检查位于 `USER CODE` 区域：创建任务前检查 `osKernelReady`，创建后检查三个句柄，`osKernelStart()` 返回即进入故障处理。故障注入验证尚待进行，不能以正常 LED 心跳代替异常路径测试。
 
@@ -77,7 +77,7 @@ NUCLEO-G474RE
 5. PLC 一次读取完整连续寄存器区，得到同一版本的快照。
 6. 新帧覆盖旧帧，不建立待发送帧队列，不让陈旧遥控命令排队。
 
-中断或 DMA 回调只负责收帧、校验和发布快照；Modbus 应答、诊断输出和非实时工作不得长时间阻塞 SBUS 接收。
+中断和 DMA 回调只记录接收事件、进度及错误并通知 SBUS 任务；组帧、解码和发布由单一 SBUS 任务负责。已知接收故障在短临界区内立即使旧快照失效。Modbus 应答、诊断输出和非实时工作不得长时间阻塞 SBUS 接收。
 
 ### 4.3 SBUS 接口原则
 
@@ -105,11 +105,11 @@ NUCLEO-G474RE
 | 0 | `uint16` | 协议版本 |
 | 1 | `uint16` | 快照序号，每发布一帧递增 |
 | 2 | `uint16` | 状态位：数据有效、SBUS 帧丢失、SBUS failsafe、SBUS 超时等 |
-| 3 | `uint16` | 最新有效 SBUS 帧年龄，单位 ms，超范围时饱和 |
+| 3 | `uint16` | 最新结构合法 SBUS 帧年龄，单位 ms，65535 饱和；无帧也为 65535，须检查状态 |
 | 4..19 | `uint16[16]` | CH1..CH16 原始值，不在 STM32 内映射为车辆动作 |
-| 20..21 | `uint32` | 有效 SBUS 帧计数，字序待确认 |
-| 22..23 | `uint32` | SBUS 错帧/重同步计数，字序待确认 |
-| 24..25 | `uint32` | Modbus 请求/异常计数，字序待确认 |
+| 20..21 | `uint32` | 已发布且未置 frame_lost/failsafe 的帧数，字序待确认 |
+| 22..23 | `uint32` | 收满 25 字节但解码失败的候选数，不是全部噪声/重同步字节数，字序待确认 |
+| 24..25 | `uint32` | 本站 CRC 合法请求数，含异常请求及当前请求；异常应答另在诊断中统计，字序待确认 |
 | 26 | `uint16` | 固件版本 |
 | 27 | `uint16` | 保留，写 0 |
 
@@ -120,6 +120,7 @@ NUCLEO-G474RE
 - 多字节计数器的高低字顺序要写入协议文档并通过测试向量验证。
 - Modbus 回包前复制一份一致快照，避免 PLC 读到一半时 SBUS 更新导致数据跨帧。
 - PLC 必须同时检查状态位、序号和帧年龄，不能只使用通道值。
+- 2026-10-27 候选实现的状态 bit0..7 分别为 usable/frame_lost/failsafe/timeout/transport_fault/no_frame/unconfigured/comm_fault，其余为 0；详见 `doc/modbus_registers.md`。这不是已经批准的 PLC 协议。uint32 高/低字顺序必须显式配置，两者均支持测试，UNSET 拒绝启动。
 
 ## 6. 软件目录建议
 
@@ -228,6 +229,67 @@ STM32 只报告原始通道和有效性，不擅自决定车辆动作。PLC 必�
 - 涉及执行机构动作前必须先说明测试条件、限位和急停手段。
 
 ## 11. 当前下一步
+
+### 2026-10-27 第一版桥接软件闭环（默认禁用 RS-485，待实物确认）
+
+- 新增 `modbus_crc`、`register_map`、`modbus_slave`、`modbus_rtu`、`bridge_config`、`rs485_port`、`bridge_service` 和统一 `uart_callbacks.c`。只读 03、CRC、异常应答、广播/其他地址静默、有界 RTU 收帧及一致寄存器副本已实现；无动态分配、待发送遥控帧队列、远程写配置或车辆动作映射。
+- `bridge_config.c` 全零，enabled/approved 均 false；正式地址、基址、字序、PLC 串口、DE 极性/建立时间、SBUS/PLC 超时和 TX 超时均待确认。禁用时不启动 USART3 RX、不触碰 DE；CubeMX 原有 USART3 初始化仍执行。启用后严格核对现有外设，不自动重配。GPIO 当前 PB12 默认低，如批准低有效 DE 必须先同步调整启动电平/偏置，不能仅改配置。
+- 使用已有 USART3 PC10/PC11 和 PB12 作为候选端口，不改引脚/串口参数。RX 为单字节 IT+512 个带时间戳原始字节缓存；TX 为静态副本+IT，DE setup 非阻塞，UART TC 后释放 DE。前置钩子/错误回调只记录，任务清理/重挂，失败终止；不在 ISR 等待或解析。适配收发器需允许 TC 后立即释放，/RE 接法需确认。
+- DWT 累计周期转微秒，要求固定主频、至少每秒采样；RTU 时间戳是 IRQ 观察值，不是硬件捕获。t1.5/t3.5 与边界时序尚待实测，不能声称标准符合性。过长/错间隔/迟到跨事务请求保守丢弃，不排队旧应答；单主站请求-应答假设不等于总线仲裁。
+- HAL 公共回调已从 sbus_uart.c 移至 uart_callbacks.c 按句柄分发；SBUS 内部入口改为 on_rx_event/on_error。SBUS 增加 valid_frames/rejected_candidates 统计，不改变候选帧格式或原发布逻辑。USART3 IRQ 在 USER CODE 中添加端口前置钩子；不移除 USART1/DMA 原钩子。
+- `StartModbusTask` 启动服务并等待事件或最多 1 tick，周期检查年龄/PLC 活性。`StartDiagTask` 保留原心跳并读取 g_bridgeDiagnostics，无阻塞打印。服务持续累积同一快照 uint64 年龄，避免完整毫秒回绕后旧帧重新有效；时基停顿/任务挂死仍不由此解决。没有启用看门狗或执行器控制。
+- 初版状态含 DISABLED/CONFIG_FAULT/COMM_FAULT/STARTUP/SBUS_FAILSAFE/SBUS_LOST/INPUT_FAULT/ACTIVE。仅报告诊断；PLC 必须另行检查通信、状态、序号/年龄、互锁及安全动作。复制后的新故障不能撤回已经发出的字节，诊断计数也不声称与快照同一时刻。
+- `Tests/run_all.cmd` 实测通过 8 个测试程序/15 次运行，包括原有回归、406 个合法读范围、10000 组异常请求/容量、RS485 TC/DE/错误恢复及服务层组合模型。全部 13 个 App 源文件 Cortex-M4 独立严格编译通过，6 个新核心模块 GCC -fanalyzer 通过，EIDE 编译链接通过。PowerShell 入口因本执行环境启动失败未运行验证，UBSan 因本机缺少 libubsan 未执行。尚未烧录、接 PLC、测 DE/IRQ/延迟、验证车辆安全。
+- 架构与阅读路线见 README 和 `doc/software_architecture.md`；协议/接线/验收边界见 `doc/modbus_registers.md`、`doc/bench_validation.md`；测试说明见 `Tests/README_bridge.md`。以下当日早期及更早记录为阶段历史，由本节更新。
+
+### 2026-10-27 遥控快照状态判断（纯软件，未接入任务）
+
+- 新增 `App/rc_status.c/.h`，提供 `rc_status_evaluate(snapshot, now_ms, timeout_ms, out)`，对稳定快照副本按需计算有帧、传输状态、协议状态、年龄、超时和 usable；无 HAL/RTOS 依赖、内部状态或初始化，不修改共享快照/通道，不决定车辆动作。
+- 保守筛选规则：仅有帧、transport_ok、未报告 frame_lost/failsafe、已配置且未超时才 usable。`age_ms >= timeout_ms` 即超时。阈值由调用者提供，允许 1..INT32_MAX ms；0 或超范围视为未配置，usable=false，不提供默认值。测试中的 100 ms 等仅为合成输入，不是 GR01 已确认参数或获批阈值。正式阈值及设备状态行为仍 TODO(待确认)。
+- 无帧时 age_ms=UINT32_MAX，协议/传输/超时输出为 false；不能只检查 timed_out。无符号年龄计算要求统一毫秒时基、复制后取 now_ms、真实帧年龄小于 2^32 ms；不解决时基停顿或超过整圈的历史淘汰。received_ms 仍为批次观察时间。消费者须定期或每次使用前调用，不因加入此文件就自动具备断线定时监视。
+- 本模块当前未被任何任务调用，UART/任务运行行为和 Modbus 寄存器草案不变。后续先确认失联阈值，再接入消费者和寄存器映射。保留尚未上板、无正式失联/车辆安全验证的边界。
+- 新增 `Tests/test_rc_status.c` 和 `Tests/README_rc_status.md`，1344 个组合及时间边界/回绕、无帧、无配置、故障及新帧恢复、空指针和输入不变测试通过；MinGW 和 Cortex-M4 严格独立编译通过。原 decoder/receiver/snapshot/UART（含启动及 abort 失败模式）回归通过，EIDE 编译链接通过；测试 main 不加入固件目标。未执行烧录、真实断线超时或硬件联调。
+
+### 2026-10-16 UART/DMA 处理、错误恢复与任务接入（待上板）
+
+- `sbus_uart_start/process/get_stats` 及 USART1 的 HAL 接收/错误回调已实现。保留 256 字节循环 DMA，另用定长工作副本防止解码期间 DMA 改写；无动态分配或待发送帧队列。串口参数/引脚不变，仍是待实测候选配置。
+- HT/TC/IDLE 回调只采样 CNDTR、记录计数并用 CMSIS-RTOS V2 线程标志唤醒唯一 SBUS 任务；不依赖回调 Size，也不把 IDLE 作为帧边界。IRQ 前置钩子在 HAL 清标志前识别 PE/FE/NE/ORE、DMA TE 及同时挂起的 HT/TC；禁止关闭 HT/TC 或移除前置钩子。累计未读量达到缓冲容量或 IRQ 圈数不可信时丢弃恢复。临界区本身须远短于缓冲填满时间，仍待硬件测量。
+- `rc_snapshot` 新增 `transport_ok` 和 `rc_snapshot_invalidate()`。已知接收故障立即清除 transport_ok，保留历史帧、序号及时间；任务 abort、重置组帧器、丢弃残帧并重启。恢复成功不使旧帧重新有效，须等下一帧 publish；启动/恢复失败进入 terminal_fault，保留 LED/调试，不关全局中断无限等待。
+- received_ms 当前取批次尾字节的 DMA 进度观察时间，同一批次共用，可能晚于物理接收；不是精确硬件时间戳。没有确定失联阈值、物理控件映射或车辆安全值，transport_ok 不替代协议状态和帧年龄检查。Modbus 寄存器草案未改变，后续须映射接收故障状态。
+- `MX_FREERTOS_Init()` 在创建任务前初始化快照；`StartSbusTask()` 启动接收后阻塞等待事件并执行 process，g_sbusStartOk 仅为启动结果。生成文件的修改均位于 USER CODE；烧录本版本将实际启用 USART1 接收，尚未验证 GR01 链路。
+- 新增 HAL/DMA 主机模型测试，覆盖分段、回绕、连续/重复事件、UART/DMA 错误、任务/IRQ 滞后、复制覆盖及恢复失败；复跑命令及硬件验证步骤见 `Tests/README_sbus_uart.md`。完整 EIDE 构建已通过；硬件烧录/通信、最坏中断延迟及故障注入尚未执行。下列 9 月记录为当时的阶段历史，现由本节更新。
+
+### 2026-09-28 UART 接收层启动骨架（未接入运行）
+
+- `App/sbus_uart.c/.h` 新增 `sbus_uart_start()`：使用当前工程 USART1 RX、256 字节静态 DMA 缓冲和私有组帧器；检查 HAL 接收就绪、DMA 关联、字节对齐、地址递增及循环模式，然后调用 `HAL_UARTEx_ReceiveToIdle_DMA()`。不修改 CubeMX 串口参数；现有参数仍是待实测的候选配置。
+- 接口由同一个 SBUS 任务独占调用，外设须已初始化。当前阶段一旦尝试 HAL 启动，无论返回成功或失败均不允许再次尝试，需复位；尚未实现停止/故障恢复。返回 true 仅说明 HAL 接受启动请求，不代表链路健康或收到有效帧。
+- `sbus_uart_process()` 仅声明，尚未实现。DMA 事件、回绕/覆盖检测、错误处理、快照发布及任务接入均未完成；目前不得在任务中调用 start/process，不改变现有运行行为。保留 DMA 半满/全满中断，不把 IDLE 当成完整帧保证。
+- 使用项目 HAL/CMSIS/BSP 头文件，Arm GCC Cortex-M4 独立编译通过（开启 Wall/Wextra/Werror/pedantic）；尚未进行启动故障注入、完整 EIDE 构建或板上接收验证。
+
+### 2026-09-27 最新快照模块检查与修正
+
+- `App/rc_snapshot.c/.h` 保留 init/publish/read 三个接口。使用文件私有静态结构体保存最新帧，修正空指针存储、指针误赋给结构体和初始化遗漏接收时间的问题，无动态分配。
+- 固件实现使用 CMSIS PRIMASK：保存原中断屏蔽状态、短暂屏蔽可配置优先级中断、复制全部字段、恢复原状态；进入/退出有 DMB 和编译器内存屏障。仅用于单核 STM32G474 的特权任务和普通可屏蔽中断，禁止 NMI/HardFault 等故障处理程序访问，不提供 DMA/多核同步。临界区内不打印、等待或发送。
+- init 仅在生产者和消费者运行前调用；单一生产者按接收顺序发布稳定的已解码结果，包括 failsafe/frame_lost 状态。sequence 为内部 uint32_t 发布序号，溢出自然回绕，不修改现有 Modbus 寄存器草案。received_ms 为统一毫秒时基的接收时间，不是年龄；has_frame 仅表示发布过帧，不表示有效或未超时。当前未实现失联超时、错误失效处理、寄存器映射或任务接入。
+- 主机测试使用显式 RC_SNAPSHOT_HOST_TEST 宏和 Tests 内测试端口，用 Windows 临界区模拟中断互斥；固件不能定义该宏。覆盖初始化/重置、NULL 不修改快照、输入输出副本独立、四种状态位组合、时间戳回绕、嵌套屏蔽状态恢复，以及一个写线程/两个读线程的一致性检查。该模型不等于真实 ISR 抢占或硬件时序验证。
+- MinGW 测试与 Arm GCC Cortex-M4 独立编译通过；检查优化后的汇编确认复制位于 PRIMASK 屏蔽/恢复之间。仍需完整 EIDE 构建、上板并发及最坏中断延迟测量。测试重跑命令见 Tests/README_rc_snapshot.md。
+
+### 2026-09-26 字节流组帧实现记录
+
+- `App/sbus_receiver.c` 实现现有接口：初始化/显式重置，逐字节寻找候选帧头，收齐 25 字节后调用 decoder。无 HAL/RTOS 依赖、动态分配或待发送队列；尚未接入 UART、DMA、任务或共享快照。
+- 收集中不因通道字节为 0x0F 而重启；候选帧失败后，从缓存下标 1 起寻找最早的下一候选帧头，用 memmove 保留其后字节。成功清零接收计数。false 时 out 不变，NULL 参数不消费字节；已初始化对象的异常 length 在写入前重置。
+- 仅提供候选格式筛选，无法排除没有 CRC 的 SBUS 假帧；测试明确包含错位数据恰好被接受的反例。没有帧间时间判定、失联超时、UART 错误处理或有效性发布；上层检测到已知数据流中断后须重置组帧状态，并另行处理旧快照失效。真实 GR01 行为仍待验证。
+- 主机测试 `Tests/test_sbus_receiver.c` 覆盖全部两段切分点、连续帧、噪声、载荷内帧头、状态位、重同步偏移、重复假帧头、插入/删除字节向量、重置/空指针/异常计数、false 输出不变及 8192 字节流与独立滑窗参考的逐字节比对。原 decoder 测试也重跑；receiver 的 Arm GCC Cortex-M4 独立编译通过，不等于完整固件或硬件通信验证。
+- 重跑：在 Tests 目录先建立 build，执行 `gcc -std=c11 -Wall -Wextra -Werror -pedantic -O2 -I ../App ../App/sbus_decoder.c ../App/sbus_receiver.c test_sbus_receiver.c -o build/test_sbus_receiver.exe`，然后运行生成的程序。测试 main 不加入 EIDE 固件目标。
+
+### 2026-09-15 单帧解码实现记录
+
+- 用户选择业务代码位于 `Code/G474RE_SBUS2RS485/App/`，独立主机测试位于同级 `Tests/`；第 6 节目录树是早期建议，不再作为 App 的实际位置。
+- `sbus_decode_frame()` 是无 HAL/RTOS 依赖的单帧解码器，未接入 DMA 或任务。候选规则：长度恰好 25 字节、帧头 0x0F、帧尾仅接受 0x00、状态字节高四位必须为零。暂不支持其他帧尾变体；这不是 GR01 已确认规格。
+- 16 个通道按 11 位低位在前解码；状态位 2 为 frame_lost，位 3 为 failsafe，位 0/1 数字通道忽略。状态置位的结构合法帧仍返回 true，调用者必须另行检查有效性和时效；普通 SBUS 无帧 CRC，格式检查不能证明内容未被干扰。
+- 空指针、错误长度、头尾或保留位错误返回 false，out 保持不变。输入必须由调用者保证在解码期间稳定；局部结果最终赋值不是跨任务原子操作。
+- MinGW 主机测试通过：32768 个逐通道编码值用例、固定字节向量、混合通道、全零/全最大值、256 种状态、错误头尾和长度、失败输出保持。Arm GCC Cortex-M4 独立编译通过；未进行 GR01 实测、完整固件重新构建或硬件通信验证。
+- 测试重跑：在 `Code/G474RE_SBUS2RS485/Tests/` 下，用主机 GCC 执行 `gcc -std=c11 -Wall -Wextra -Werror -pedantic -O2 -I ../App ../App/sbus_decoder.c test_sbus_decoder.c -o build/test_sbus_decoder.exe`（先创建 build 目录），再运行 `./build/test_sbus_decoder.exe`。不要定义 NDEBUG，也不要将测试 main 加入 STM32 固件目标。
 
 在遥控器暂时不在手上的情况下，先完成：
 
