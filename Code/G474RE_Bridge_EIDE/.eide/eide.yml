@@ -7,6 +7,7 @@ srcDirs:
   - ../G474RE_SBUS2RS485/Core
   - ../G474RE_SBUS2RS485/Drivers/STM32G4xx_HAL_Driver/Src
   - ../G474RE_SBUS2RS485/Drivers/BSP/STM32G4xx_Nucleo
+  - ../G474RE_SBUS2RS485/App
 virtualFolder:
   name: <virtual_root>
   files:
@@ -44,6 +45,7 @@ targets:
         - ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2
         - ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/include
         - ../G474RE_SBUS2RS485/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F
+        - ../G474RE_SBUS2RS485/App
       libList: []
     excludeList: []
     settings:

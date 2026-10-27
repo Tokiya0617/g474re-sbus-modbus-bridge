@@ -25,7 +25,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "sbus_uart.h"
+#include "rc_snapshot.h"
+#include "bridge_service.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +51,10 @@ typedef StaticTask_t osStaticThreadDef_t;
 /* 调试器中查看；仅保存在 RAM，复位后不保留 */
 volatile uint32_t g_rtosFaultCode = 0U;               // RTOS 故障代码
 TaskHandle_t volatile g_rtosFaultTask = NULL;         // RTOS 故障任务句柄
+volatile bool g_sbusStartOk = false;                 // 台架启动结果；不是链路有效标志
+volatile BridgeState g_bridgeStartState = BRIDGE_DISABLED;
+/* 仅 diagTask 写，调试器读；任务间请使用 bridge_service_get_diagnostics()。 */
+BridgeDiagnostics g_bridgeDiagnostics;
 /* USER CODE END Variables */
 /* Definitions for diagTask */
 osThreadId_t diagTaskHandle;
@@ -159,6 +165,7 @@ void MX_FREERTOS_Init(void) {
     g_rtosFaultCode = 3U; /* 内核初始化状态异常 */
     Error_Handler();
   }
+  rc_snapshot_init(); /* 所有生产者和消费者启动前初始化一次。 */
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -226,6 +233,7 @@ void StartDiagTask(void *argument)
   for(;;)
   {
     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+    (void)bridge_service_get_diagnostics(&g_bridgeDiagnostics);
     osDelay(500);
   }
   /* USER CODE END StartDiagTask */
@@ -241,10 +249,17 @@ void StartDiagTask(void *argument)
 void StartSbusTask(void *argument)
 {
   /* USER CODE BEGIN StartSbusTask */
-  /* Infinite loop */
-  for(;;)
+  g_sbusStartOk = sbus_uart_start();
+  if (!g_sbusStartOk)
   {
-    osDelay(1);
+    /* 通信故障不关全局中断；保留 LED 和调试器，快照仍不可用。 */
+    for (;;) osDelay(100);
+  }
+  for(;;)
+   {
+    /* 标志只负责唤醒，数据及累计进度保存在接收层，多个事件可合并。 */
+    (void)osThreadFlagsWait(SBUS_UART_THREAD_FLAG, osFlagsWaitAny, osWaitForever);
+    sbus_uart_process();
   }
   /* USER CODE END StartSbusTask */
 }
@@ -259,10 +274,14 @@ void StartSbusTask(void *argument)
 void StartModbusTask(void *argument)
 {
   /* USER CODE BEGIN StartModbusTask */
-  /* Infinite loop */
+  (void)argument;
+  g_bridgeStartState = bridge_service_start(bridge_config_get());
   for(;;)
   {
-    osDelay(1);
+    /* RTU 静默和失联检查需要周期唤醒；线程标志只降低事件处理等待。
+     * 1 tick 在当前 FreeRTOS 1000 Hz 配置下为 1 ms，不是 RTU 帧边界。 */
+    (void)osThreadFlagsWait(RS485_THREAD_FLAG, osFlagsWaitAny, 1U);
+    bridge_service_process();
   }
   /* USER CODE END StartModbusTask */
 }
